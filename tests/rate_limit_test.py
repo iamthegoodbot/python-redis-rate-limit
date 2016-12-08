@@ -93,8 +93,8 @@ class TestRedisRateLimit(unittest.TestCase):
                                     max_requests=10, expire=5, blocking=False)
         self.rate_limit_2 = RateLimit(resource='test', client='localhost',
                                       max_requests=10, expire=5)
-        self.rate_limit_2._acquire_check_timeout = 3
-        self.rate_limit_2._acquire_overall_timeout = 5
+        self.rate_limit_2._acquire_check_interval = 3
+        self.rate_limit_2._acquire_timeout = 5
 
         with self.rate_limit:  # start quota
             pass
@@ -104,7 +104,8 @@ class TestRedisRateLimit(unittest.TestCase):
         # By this time there is 100% quota usage and 2 secs before quota recovery
         self.assertEqual(self.rate_limit.acquire_attempt, 0)
 
-        multiprocessing.Process(target=self.another_thread).run()
+        proc = multiprocessing.Process(target=self._another_thread)
+        proc.start()
 
         with self.assertRaises(redis_rate_limit.QuotaTimeout):
             with self.rate_limit_2:
@@ -113,6 +114,7 @@ class TestRedisRateLimit(unittest.TestCase):
                 # So after another second this instance checks again and see no quota available
                 # Next time it checks is after another 3 secs 3+3=6 > 5 (max wait time)
                 pass
+        proc.join()
 
     def test_nested_not_allowed(self):
         """

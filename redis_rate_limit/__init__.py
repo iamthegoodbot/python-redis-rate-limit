@@ -54,7 +54,7 @@ class RateLimit(object):
     top of Redis >= 2.6.0.
     """
     def __init__(self, resource, client, max_requests, expire=None, pessimistic_acquire=False,
-                blocking=True, acquire_timeout=None, r_connection=None):
+                 blocking=True, acquire_timeout=None, r_connection=None):
         """
         Class initialization method checks if the Rate Limit algorithm is
         actually supported by the installed Redis version and sets some
@@ -82,10 +82,10 @@ class RateLimit(object):
         self._max_requests = max_requests
         self._expire = expire or 1  # limit requests per this period of time
         if acquire_timeout is not None:
-            self._acquire_overall_timeout = acquire_timeout
+            self._acquire_timeout = acquire_timeout
         else:
-            self._acquire_overall_timeout = self._expire * 5
-        self._acquire_check_timeout = self._expire / 10.  # if quota is empty, retry after this period
+            self._acquire_timeout = self._expire * 5
+        self._acquire_check_interval = self._expire / 10.  # if quota is empty, retry after this period
         self.acquired_times = 0  # number of times rate limiter was used
         self.acquire_attempt = 0  # current attempt to acquire quota
 
@@ -113,9 +113,9 @@ class RateLimit(object):
 
         try:
             while True:
-                if (0 < self._acquire_overall_timeout < (datetime.datetime.now() - acquire_attempt_start).seconds and
+                if (0 < self._acquire_timeout < (datetime.datetime.now() - acquire_attempt_start).seconds and
                         self.blocking):
-                    raise QuotaTimeout('Unable to acquire quota in %.2f secs' % self._acquire_overall_timeout)
+                    raise QuotaTimeout('Unable to acquire quota in %.2f secs' % self._acquire_timeout)
 
                 try:
                     self.increment_usage()
@@ -126,7 +126,7 @@ class RateLimit(object):
                         if self.acquire_attempt == 1:
                             self._redis.incr(self._num_waiting_key)  # +1 process waiting
                         self.acquire_attempt += 1
-                        time.sleep(self._acquire_check_timeout)
+                        time.sleep(self._acquire_check_interval)
                 else:
                     self.acquired_times += 1
                     break
