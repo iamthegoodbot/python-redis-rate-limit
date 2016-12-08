@@ -53,7 +53,8 @@ class RateLimit(object):
     This class offers an abstraction of a Rate Limit algorithm implemented on
     top of Redis >= 2.6.0.
     """
-    def __init__(self, resource, client, max_requests, expire=None, pessimistic_acquire=False, blocking=True, r_connection=None):
+    def __init__(self, resource, client, max_requests, expire=None, pessimistic_acquire=False,
+                blocking=True, acquire_timeout=None, r_connection=None):
         """
         Class initialization method checks if the Rate Limit algorithm is
         actually supported by the installed Redis version and sets some
@@ -65,6 +66,7 @@ class RateLimit(object):
         :param client: client identifier string (i.e. ‘192.168.0.10’)
         :param max_requests: integer (i.e. ‘10’)
         :param expire: seconds to wait before resetting counters (i.e. ‘60’)
+        :param acquire_timeout: (if present) raise exception if unable to acquire quota this long, 0 - wait forever
         """
         if r_connection:
             self._redis = r_connection
@@ -79,7 +81,10 @@ class RateLimit(object):
 
         self._max_requests = max_requests
         self._expire = expire or 1  # limit requests per this period of time
-        self._acquire_overall_timeout = self._expire * 5  # if cannot acquire this long, fail
+        if acquire_timeout is not None:
+            self._acquire_overall_timeout = acquire_timeout
+        else:
+            self._acquire_overall_timeout = self._expire * 5
         self._acquire_check_timeout = self._expire / 10.  # if quota is empty, retry after this period
         self.acquired_times = 0  # number of times rate limiter was used
         self.acquire_attempt = 0  # current attempt to acquire quota
@@ -108,8 +113,8 @@ class RateLimit(object):
 
         try:
             while True:
-                if (self.blocking and
-                        (datetime.datetime.now() - acquire_attempt_start).seconds > self._acquire_overall_timeout):
+                if (0 < self._acquire_overall_timeout < (datetime.datetime.now() - acquire_attempt_start).seconds and
+                        self.blocking):
                     raise QuotaTimeout('Unable to acquire quota in %.2f secs' % self._acquire_overall_timeout)
 
                 try:
