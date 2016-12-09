@@ -2,6 +2,7 @@
 #  -*- coding: utf-8 -*-
 import datetime
 import time
+from collections import Callable
 from distutils.version import StrictVersion
 from hashlib import sha1
 
@@ -53,7 +54,7 @@ class RateLimit(object):
     This class offers an abstraction of a Rate Limit algorithm implemented on
     top of Redis >= 2.6.0.
     """
-    def __init__(self, resource, client, max_requests, expire=None, pessimistic_acquire=False,
+    def __init__(self, resource, client, max_requests, expire=None,
                  blocking=True, acquire_timeout=None, r_connection=None):
         """
         Class initialization method checks if the Rate Limit algorithm is
@@ -90,51 +91,55 @@ class RateLimit(object):
         self.acquire_attempt = 0  # current attempt to acquire quota
 
         self.blocking = blocking
-        self.pessimistic_acquire = pessimistic_acquire
+        self.post_enter_callbacks = set()
+
+    def add_post_enter_callback(self, cb):
+        '''
+        Add hook to execute one time after __enter__ but before body
+        :param on_acquire:
+        '''
+        if hasattr(cb, '__call__'):
+            self.post_enter_callbacks.add(cb)
 
     def __enter__(self):
-        if self.acquire_attempt > 0:
-            raise GaveUp('Do not nest the usage of %r instance!' % self)
-
-        if not self._max_requests:  # effectively do not control rate limit
-            return
-
-        if (self.pessimistic_acquire and
-                self.acquired_times == 0 and  # new task
-                self.has_been_reached()):  # quota is empty
-            # don't try to acquire
-            raise GaveUp(
-                'Won\'t acquire quota as there are %d instances waiting for it already' %
-                self.number_of_waiting_for_quota()
-            )
-
-        acquire_attempt_start = datetime.datetime.now()
-        self.acquire_attempt = 1
-
         try:
-            while True:
-                if (0 < self._acquire_timeout < (datetime.datetime.now() - acquire_attempt_start).seconds and
-                        self.blocking):
-                    raise QuotaTimeout('Unable to acquire quota in %.2f secs' % self._acquire_timeout)
+            try:
+                if self.acquire_attempt > 0:
+                    raise GaveUp('Do not nest the usage of %r instance!' % self)
 
-                try:
-                    self.increment_usage()
-                except TooManyRequests:
-                    if not self.blocking:
-                        raise
+                if not self._max_requests:  # effectively do not control rate limit
+                    return
+
+                acquire_attempt_start = datetime.datetime.now()
+                self.acquire_attempt = 1
+                while True:
+                    if (0 < self._acquire_timeout < (datetime.datetime.now() - acquire_attempt_start).seconds and
+                            self.blocking):
+                        raise QuotaTimeout('Unable to acquire quota in %.2f secs' % self._acquire_timeout)
+
+                    try:
+                        self.increment_usage()
+                    except TooManyRequests:
+                        if not self.blocking:
+                            raise
+                        else:
+                            if self.acquire_attempt == 1:
+                                self._redis.incr(self._num_waiting_key)  # +1 process waiting
+                            self.acquire_attempt += 1
+                            time.sleep(self._acquire_check_interval)
                     else:
-                        if self.acquire_attempt == 1:
-                            self._redis.incr(self._num_waiting_key)  # +1 process waiting
-                        self.acquire_attempt += 1
-                        time.sleep(self._acquire_check_interval)
-                else:
-                    self.acquired_times += 1
-                    break
+                        break
+            finally:
+                while self.post_enter_callbacks:
+                    cb = self.post_enter_callbacks.pop()
+                    cb(self)
         except Exception:
             if self.acquire_attempt > 1:
                 self._redis.decr(self._num_waiting_key)
             self.acquire_attempt = 0
             raise
+        else:
+            self.acquired_times += 1
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.acquire_attempt = 0

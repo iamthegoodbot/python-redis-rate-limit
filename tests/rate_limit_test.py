@@ -104,7 +104,7 @@ class TestRedisRateLimit(unittest.TestCase):
         # By this time there is 100% quota usage and 2 secs before quota recovery
         self.assertEqual(self.rate_limit.acquire_attempt, 0)
 
-        proc = multiprocessing.Process(target=self._another_thread)
+        proc = multiprocessing.Process(target=self.another_thread)
         proc.start()
 
         with self.assertRaises(redis_rate_limit.QuotaTimeout):
@@ -125,17 +125,14 @@ class TestRedisRateLimit(unittest.TestCase):
                 with self.rate_limit:
                     pass
 
-    def test_pessimistic_acquire(self):
-        """
-        Should raise GaveUp Exception when at the moment instance tries to acquire quota for the first time
-         it is already exceeded by another instance
-        """
-        self.rate_limit_2 = RateLimit(resource='test', client='localhost',
-                                      max_requests=10, expire=5, pessimistic_acquire=True)
-        self._make_10_requests()
-        with self.assertRaises(redis_rate_limit.GaveUp):
-            with self.rate_limit_2:
-                pass
+    def test_acquire_callbacks(self):
+        def cb(rl):
+            rl.callback_called = True
+
+        self.rate_limit.add_post_enter_callback(cb)
+        with self.rate_limit:
+            self.assertEquals(self.rate_limit.callback_called, True)
+        self.assertEquals(self.rate_limit.post_enter_callbacks, set())
 
 
 
