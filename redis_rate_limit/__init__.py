@@ -130,12 +130,12 @@ class RateLimit(object):
                     else:
                         break
             finally:
+                if self.acquire_attempt > 1:
+                    self._redis.decr(self._num_waiting_key)
                 while self.post_enter_callbacks:
                     cb = self.post_enter_callbacks.pop()
                     cb(self)
         except Exception:
-            if self.acquire_attempt > 1:
-                self._redis.decr(self._num_waiting_key)
             self.acquire_attempt = 0
             raise
         else:
