@@ -8,6 +8,7 @@ from hashlib import sha1
 
 from redis import Redis, ConnectionPool
 from redis.exceptions import NoScriptError
+from redis_rate_limit import redis_lock
 
 __version__ = "0.0.1"
 
@@ -45,6 +46,10 @@ class GaveUp(Exception):
     pass
 
 
+class TooManyWaitingInstances(Exception):
+    pass
+
+
 class QuotaTimeout(Exception):
     pass
 
@@ -55,7 +60,7 @@ class RateLimit(object):
     top of Redis >= 2.6.0.
     """
     def __init__(self, resource, client, max_requests, expire=None,
-                 blocking=True, acquire_timeout=None, r_connection=None):
+                 blocking=True, acquire_timeout=None, r_connection=None, first_acquire_waiting_limit=None):
         """
         Class initialization method checks if the Rate Limit algorithm is
         actually supported by the installed Redis version and sets some
@@ -68,6 +73,7 @@ class RateLimit(object):
         :param max_requests: integer (i.e. ‘10’)
         :param expire: seconds to wait before resetting counters (i.e. ‘60’)
         :param acquire_timeout: (if present) raise exception if unable to acquire quota this long, 0 - wait forever
+        :param first_acquire_waiting_limit: (if present) max number of waiting instances on first acquire.
         """
         if r_connection:
             self._redis = r_connection
@@ -79,8 +85,10 @@ class RateLimit(object):
 
         self._rate_limit_key = "rate_limit:{0}_{1}".format(resource, client)
         self._num_waiting_key = "waiting_rate_limit:{0}_{1}".format(resource, client)
+        self._lock_num_waiting_key = '%s:lock' % self._num_waiting_key
 
         self._max_requests = max_requests
+        self.first_acquire_waiting_limit = first_acquire_waiting_limit
         self._expire = expire or 1  # limit requests per this period of time
         if acquire_timeout is not None:
             self._acquire_timeout = acquire_timeout
@@ -91,15 +99,6 @@ class RateLimit(object):
         self.acquire_attempt = 0  # current attempt to acquire quota
 
         self.blocking = blocking
-        self.post_enter_callbacks = set()
-
-    def add_post_enter_callback(self, cb):
-        '''
-        Add hook to execute one time after __enter__ but before body
-        :param on_acquire:
-        '''
-        if hasattr(cb, '__call__'):
-            self.post_enter_callbacks.add(cb)
 
     def __enter__(self):
         try:
@@ -109,6 +108,8 @@ class RateLimit(object):
 
                 if not self._max_requests:  # effectively do not control rate limit
                     return
+
+                self.check_waiting_instances_limit()
 
                 acquire_attempt_start = datetime.datetime.now()
                 self.acquire_attempt = 1
@@ -132,9 +133,7 @@ class RateLimit(object):
             finally:
                 if self.acquire_attempt > 1:
                     self._redis.decr(self._num_waiting_key)
-                while self.post_enter_callbacks:
-                    cb = self.post_enter_callbacks.pop()
-                    cb(self)
+
         except Exception:
             self.acquire_attempt = 0
             raise
@@ -143,6 +142,15 @@ class RateLimit(object):
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.acquire_attempt = 0
+
+    def check_waiting_instances_limit(self):
+        with redis_lock.Lock(self._redis, key=self._lock_num_waiting_key, check_interval=0.1):
+            if (self.first_acquire_waiting_limit is not None  # limiting is necessary
+                and self.acquired_times == 0  # first acquire
+                and self.has_been_reached()
+                and self.number_of_waiting_for_quota() >= self.first_acquire_waiting_limit):
+
+                raise TooManyWaitingInstances()
 
     def get_usage(self):
         """
