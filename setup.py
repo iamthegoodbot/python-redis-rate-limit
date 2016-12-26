@@ -11,7 +11,7 @@ with open('requirements.txt') as f:
 
 setup(
     name='python-redis-rate-limit',
-    version='0.0.1',
+    version='0.0.2',
     description=u'',
     long_description=readme,
     author=u'Victor Torres',
