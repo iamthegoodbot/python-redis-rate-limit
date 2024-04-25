@@ -1,3 +1,5 @@
+# DEPRECATED! ACTUAL [HERE](https://git.internal.sailplay.org/services/skazka/python-redis-rate-limit)
+
 python-redis-rate-limit
 =======================
 
